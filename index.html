@@ -3,10 +3,12 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Lathe Twin v0.4 — Fanuc Oi-TF Digital Twin Simulator</title>
+    <title>Lathe Twin v0.6 — Fanuc Oi-TF Digital Twin Simulator</title>
 
-    <!-- Three.js – Stable r165 from unpkg (bulletproof CDN, Nov 2025 compatible) -->
-    <script src="https://unpkg.com/three@0.165.0/build/three.min.js"></script>
+    <!-- Three.js – r165 from jsDelivr (official, no MIME issues, Nov 2025 stable) -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.min.js" 
+            onload="console.log('Three.js loaded successfully')" 
+            onerror="console.error('Three.js CDN failed – add local three.min.js to repo')"></script>
 
     <style>
         /* Pure CSS (Tailwind-inspired) – No CDN, No Warnings */
@@ -129,7 +131,7 @@
 <body>
     <div id="container">
         <div id="ui-panel">
-            <h1>Lathe Twin v0.4</h1>
+            <h1>Lathe Twin v0.6</h1>
             <p>Paste your .nc G-code below → Run simulation with Z-Gate crash protection</p>
             <textarea id="gcode-input" placeholder="O0021 (SO#12345)
 G20 G40 G99
@@ -154,7 +156,14 @@ G0 X1.100 Z0.0
     </div>
 
     <script>
-        // ==================== THREE.JS SETUP ====================
+        // ==================== THREE.JS SETUP (Waits for load if needed) ====================
+        if (typeof THREE === 'undefined') {
+            console.error('Three.js not loaded – check CDN or add local file');
+            alert('Three.js failed to load. Add three.min.js locally to /assets/ and update <script src="./assets/three.min.js">');
+        } else {
+            console.log('Three.js ready');
+        }
+
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x111827);
 

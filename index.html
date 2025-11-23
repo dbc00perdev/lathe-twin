@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lathe Twin v0.2 — Fanuc Oi-TF Digital Twin Simulator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r158/three.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111827; color: #e5e7eb; font-family: 'Segoe UI', sans-serif; }
+        #container { position: relative; width: 100vw; height: 100vh; }
+        #ui-panel {
+            position: absolute; top: 10px; left: 10px; z-index: 100;
+            background: rgba(31, 41, 55, 0.95); padding: 16px; border-radius: 8px;
+            width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+        }
+        #gcode-output {
+            position: absolute; bottom: 10px; left: 10px; width: 48%; height: 260px;
+            background: #1f2937; overflow-y: auto; padding: 12px; border-radius: 6px;
+            font-family: 'Consolas', monospace; font-size: 12.5px; line-height: 1.4;
+        }
+        #status-bar {
+            position: absolute; top: 10px; right: 10px; z-index: 100;
+            background: rgba(0,0,0,0.8); padding: 12px 20px; border-radius: 6px; font-weight: bold;
+        }
+        .line-current { background: #3b82f6 !important; color: white; }
+        .line-crash { background: #ef4444 !important; color: white; }
+        .btn { margin: 6px 0; padding: 10px 14px; border-radius: 6px; font-weight: bold; cursor: pointer; }
+        .btn-run { background: #2563eb; }
+        .btn-pause { background: #d97706; }
+        .btn-step { background: #16a34a; }
+        .btn-export { background: #7c3aed; }
+        .btn:hover { opacity: 0.9; }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="ui-panel" class="text-white">
+            <h1 class="text-2xl font-bold mb-3">Lathe Twin v0.2</h1>
+            <p class="text-sm text-gray-300 mb-3">Paste your .nc G-code below → Run simulation with Z-Gate crash protection</p>
+            <textarea id="gcode-input" class="w-full h-48 bg-gray-800 text-white p-3 rounded border border-gray-600 resize-none" placeholder="O0021 (SO#12345)&#10;G20 G40 G99&#10;T0202&#10;..."></textarea>
+            <div class="flex flex-wrap gap-2 mt-3">
+                <button id="run-btn" class="btn btn-run text-white">Run Simulation</button>
+                <button id="pause-btn" class="btn btn-pause text-white hidden">Pause</button>
+                <button id="step-btn" class="btn btn-step text-white">Step →</button>
+                <button id="export-png" class="btn btn-export text-white">Export PNG</button>
+            </div>
+        </div>
+
+        <div id="status-bar">
+            <div id="z-gate-status">Z-Gate: Ready</div>
+            <div id="line-info">Line: 0</div>
+        </div>
+
+        <pre id="gcode-output"></pre>
+    </div>
+
+    <script>
+        // ==================== THREE.JS SETUP ====================
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111827);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.getElementById('container').appendChild(renderer.domElement);
+
+        // Basic lathe (wireframe for speed)
+        const latheGroup = new THREE.Group();
+
+        // Bed
+        const bed = new THREE.Mesh(
+            new THREE.BoxGeometry(20, 2, 8),
+            new THREE.MeshBasicMaterial({ color: 0x4b5563, wireframe: true })
+        );
+        bed.rotation.x = -Math.PI / 8;
+        bed.position.y = -1;
+        latheGroup.add(bed);
+
+        // Chuck
+        const chuck = new THREE.Mesh(
+            new THREE.CylinderGeometry(2, 2, 1, 32),
+            new THREE.MeshBasicMaterial({ color: 0x9ca3af, wireframe: true })
+        );
+        chuck.position.z = 2;
+        latheGroup.add(chuck);
+
+        // Turret + Tool
+        const turret = new THREE.Group();
+        const turretBody = new THREE.Mesh(
+            new THREE.BoxGeometry(1.5, 1.5, 3),
+            new THREE.MeshBasicMaterial({ color: 0x3b82f6, wireframe: true })
+        );
+        turret.add(turretBody);
+        turret.position.set(0, 0.5, -6);
+        latheGroup.add(turret);
+
+        // Tool tip (red line)
+        const toolGeometry = new THREE.BufferGeometry();
+        const toolMaterial = new THREE.LineBasicMaterial({ color: 0xff3333, linewidth: 3 });
+        const toolLine = new THREE.Line(toolGeometry, toolMaterial);
+        turret.add(toolLine);
+
+        scene.add(latheGroup);
+
+        // Lighting
+        scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(10, 10, 5);
+        scene.add(dirLight);
+
+        camera.position.set(12, 10, 12);
+        camera.lookAt(0, 0, 0);
+
+        // Simple orbit with mouse drag
+        let isDragging = false;
+        let previousMouse = { x: 0, y: 0 };
+        document.addEventListener('mousedown', (e) => { isDragging = true; previousMouse = { x: e.clientX, y: e.clientY }; });
+        document.addEventListener('mouseup', () => isDragging = false);
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const deltaX = e.clientX - previousMouse.x;
+            const deltaY = e.clientY - previousMouse.y;
+            camera.position.x += deltaX * 0.02;
+            camera.position.y -= deltaY * 0.02;
+            previousMouse = { x: e.clientX, y: e.clientY };
+        });
+
+        // ==================== SIMULATOR STATE ====================
+        let gcodeLines = [];
+        let currentLineIndex = 0;
+        let isRunning = false;
+        let animationId = null;
+        let allowedZmin = -2.323; // default – will be overridden by comment
+        let toolPathPoints = [];
+        let pathLine = null;
+
+        // Toolpath visualization
+        function updateToolPath() {
+            if (pathLine) scene.remove(pathLine);
+            if (toolPathPoints.length < 2) return;
+            const geometry = new THREE.BufferGeometry().setFromPoints(toolPathPoints);
+            const material = new THREE.LineBasicMaterial({ color: toolPathPoints[toolPathPoints.length-1].crash ? 0xff3333 : 0x10b981 });
+            pathLine = new THREE.Line(geometry, material);
+            scene.add(pathLine);
+        }
+
+        // Z-Gate check
+        function checkZGate(z) {
+            if (z < allowedZmin - 0.001) {
+                document.getElementById('z-gate-status').innerHTML = `<span style="color:#ff3333">CRASH: Z${z.toFixed(4)} < ${allowedZmin.toFixed(4)}</span>`;
+                return false;
+            }
+            return true;
+        }
+
+        // Parse single line
+        function executeLine(line) {
+            line = line.trim();
+            if (!line || line.startsWith('(')) {
+                // Look for manual Z limit in comments
+                const zMatch = line.match(/Manual Allowed Zmin[:\s]+(-?\d+\.\d+)/i);
+                if (zMatch) allowedZmin = parseFloat(zMatch[1]);
+                return;
+            }
+
+            // Tool change
+            if (/T\d\d\d\d/.test(line)) {
+                const tool = line.match(/T(\d\d)/);
+                if (tool) {
+                    const station = parseInt(tool[1]) % 12;
+                    turret.rotation.y = (station * 30) * Math.PI / 180;
+                }
+            }
+
+            // Spindle (simple chuck spin)
+            if (line.includes('M03') || line.includes('M3')) {
+                chuck.rotation.z += 0.2;
+            }
+
+            // Moves
+            const move = line.match(/(G[01]).*X([-\d.]+).*Z([-\d.]+)/i);
+            if (move) {
+                const x = parseFloat(move[2]);
+                const z = parseFloat(move[3]);
+
+                // Move tool tip
+                toolGeometry.setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(x, 0, z - 6)]);
+
+                // Toolpath
+                const point = new THREE.Vector3(x, 0, z);
+                point.crash = !checkZGate(z);
+                toolPathPoints.push(point);
+                updateToolPath();
+
+                // Update UI
+                document.getElementById('line-info').textContent = `Line ${currentLineIndex}: ${move[0]}`;
+                highlightCurrentLine();
+            }
+        }
+
+        function highlightCurrentLine() {
+            const lines = document.querySelectorAll('#gcode-output div');
+            lines.forEach((l, i) => {
+                l.classList.remove('line-current', 'line-crash');
+                if (i === currentLineIndex - 1) {
+                    l.classList.add(toolPathPoints.length && toolPathPoints[toolPathPoints.length-1].crash ? 'line-crash' : 'line-current');
+                }
+            });
+            document.getElementById('gcode-output').scrollTop = (currentLineIndex - 10) * 18;
+        }
+
+        // ==================== UI CONTROLS ====================
+        document.getElementById('run-btn').addEventListener('click', () => {
+            gcodeLines = document.getElementById('gcode-input').value.split('\n');
+            currentLineIndex = 0;
+            toolPathPoints = [];
+            isRunning = true;
+            document.getElementById('run-btn').classList.add('hidden');
+            document.getElementById('pause-btn').classList.remove('hidden');
+            document.getElementById('z-gate-status').textContent = 'Z-Gate: Running...';
+
+            clearInterval(animationId);
+            animationId = setInterval(() => {
+                if (currentLineIndex >= gcodeLines.length) {
+                    clearInterval(animationId);
+                    isRunning = false;
+                    document.getElementById('z-gate-status').innerHTML = '<span style="color:#10b981">SIMULATION COMPLETE — SAFE TO RUN</span>';
+                    document.getElementById('pause-btn').classList.add('hidden');
+                    document.getElementById('run-btn').classList.remove('hidden');
+                    return;
+                }
+                executeLine(gcodeLines[currentLineIndex]);
+                currentLineIndex++;
+            }, 300); // speed — lower = slower
+        });
+
+        document.getElementById('pause-btn').addEventListener('click', () => {
+            isRunning = false;
+            clearInterval(animationId);
+            document.getElementById('pause-btn').classList.add('hidden');
+            document.getElementById('run-btn').classList.remove('hidden');
+        });
+
+        document.getElementById('step-btn').addEventListener('click', () => {
+            if (currentLineIndex < gcodeLines.length) {
+                executeLine(gcodeLines[currentLineIndex]);
+                currentLineIndex++;
+            }
+        });
+
+        document.getElementById('export-png').addEventListener('click', () => {
+            renderer.render(scene, camera);
+            const a = document.createElement('a');
+            a.href = renderer.domElement.toDataURL('image/png');
+            a.download = `lathe-twin-${new Date().toISOString().slice(0,10)}.png`;
+            a.click();
+        });
+
+        // Update G-code display
+        document.getElementById('gcode-input').addEventListener('input', () => {
+            const lines = document.getElementById('gcode-input').value.split('\n');
+            document.getElementById('gcode-output').innerHTML = lines
+                .map(l => `<div>${l.replace(/([GXYZTFPQR])-?\d*\.?\d*/g, '<span style="color:#60a5fa">$1</span>$&')
+                                   .replace(/M\d+/g, '<span style="color:#fcdb03">$&</span>')
+                                   .replace(/\(/g, '<span style="color:#6b7280">(')
+                                   .replace(/\)/g, ')</span>'')}</div>`)
+                .join('');
+        });
+
+        // Initial render loop
+        function animate() {
+            requestAnimationFrame(animate);
+            chuck.rotation.z += 0.005; // idle spin
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Resize handler
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

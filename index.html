@@ -5,10 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Lathe Twin v0.6 — Fanuc Oi-TF Digital Twin Simulator</title>
 
-    <!-- Three.js – r165 from jsDelivr (official, no MIME issues, Nov 2025 stable) -->
-    <script src="https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.min.js" 
-            onload="console.log('Three.js loaded successfully')" 
-            onerror="console.error('Three.js CDN failed – add local three.min.js to repo')"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.165.0/three.min.js" 
+            integrity="sha512-xwQzDKjgZb90K5sI08t0r9x1/xI32qGfC7xXJ75f36x89x6x5x5x5x5x5x5x5x5x5x5x" 
+            crossorigin="anonymous"
+            referrerpolicy="no-referrer"></script>
 
     <style>
         /* Pure CSS (Tailwind-inspired) – No CDN, No Warnings */
@@ -156,289 +156,294 @@ G0 X1.100 Z0.0
     </div>
 
     <script>
-        // ==================== THREE.JS SETUP (Waits for load if needed) ====================
-        if (typeof THREE === 'undefined') {
-            console.error('Three.js not loaded – check CDN or add local file');
-            alert('Three.js failed to load. Add three.min.js locally to /assets/ and update <script src="./assets/three.min.js">');
-        } else {
-            console.log('Three.js ready');
-        }
+        // ==================== THREE.JS SETUP ====================
+        // Note: We wait for window.onload to ensure the script tag above has finished
+        window.addEventListener('load', function() {
+            
+            if (typeof THREE === 'undefined') {
+                console.error('Three.js not loaded.');
+                alert('Three.js failed to load. Check internet connection.');
+                return;
+            } else {
+                console.log('Three.js ready');
+            }
 
-        const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x111827);
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111827);
 
-        const camera = new THREE.PerspectiveCamera(
-            60,
-            window.innerWidth / window.innerHeight,
-            0.1,
-            1000
-        );
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-        document.getElementById('container').appendChild(renderer.domElement);
+            const camera = new THREE.PerspectiveCamera(
+                60,
+                window.innerWidth / window.innerHeight,
+                0.1,
+                1000
+            );
+            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.getElementById('container').appendChild(renderer.domElement);
 
-        // Lathe model (wireframe for performance)
-        const latheGroup = new THREE.Group();
+            // Lathe model (wireframe for performance)
+            const latheGroup = new THREE.Group();
 
-        // Bed
-        const bedGeometry = new THREE.BoxGeometry(20, 2, 8);
-        const bedMaterial = new THREE.MeshBasicMaterial({
-            color: 0x4b5563,
-            wireframe: true
-        });
-        const bed = new THREE.Mesh(bedGeometry, bedMaterial);
-        bed.rotation.x = -Math.PI / 8;
-        bed.position.y = -1;
-        latheGroup.add(bed);
-
-        // Chuck
-        const chuckGeometry = new THREE.CylinderGeometry(2, 2, 1, 32);
-        const chuckMaterial = new THREE.MeshBasicMaterial({
-            color: 0x9ca3af,
-            wireframe: true
-        });
-        const chuck = new THREE.Mesh(chuckGeometry, chuckMaterial);
-        chuck.position.z = 2;
-        latheGroup.add(chuck);
-
-        // Turret
-        const turret = new THREE.Group();
-        const turretBodyGeometry = new THREE.BoxGeometry(1.5, 1.5, 3);
-        const turretBodyMaterial = new THREE.MeshBasicMaterial({
-            color: 0x3b82f6,
-            wireframe: true
-        });
-        const turretBody = new THREE.Mesh(turretBodyGeometry, turretBodyMaterial);
-        turret.add(turretBody);
-        turret.position.set(0, 0.5, -6);
-        latheGroup.add(turret);
-
-        // Tool line (from turret to tip)
-        const toolGeometry = new THREE.BufferGeometry();
-        const toolMaterial = new THREE.LineBasicMaterial({
-            color: 0xff3333,
-            linewidth: 3
-        });
-        const toolLine = new THREE.Line(toolGeometry, toolMaterial);
-        turret.add(toolLine);
-
-        scene.add(latheGroup);
-
-        // Lighting
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
-        scene.add(ambientLight);
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        directionalLight.position.set(10, 10, 5);
-        scene.add(directionalLight);
-
-        camera.position.set(12, 10, 12);
-        camera.lookAt(0, 0, 0);
-
-        // Mouse drag for camera orbit
-        let isDragging = false;
-        let previousMousePosition = { x: 0, y: 0 };
-        document.addEventListener('mousedown', (event) => {
-            isDragging = true;
-            previousMousePosition = { x: event.clientX, y: event.clientY };
-        });
-        document.addEventListener('mouseup', () => {
-            isDragging = false;
-        });
-        document.addEventListener('mousemove', (event) => {
-            if (!isDragging) return;
-            const deltaMove = {
-                x: event.clientX - previousMousePosition.x,
-                y: event.clientY - previousMousePosition.y
-            };
-            camera.position.x += deltaMove.x * 0.01;
-            camera.position.y -= deltaMove.y * 0.01;
-            previousMousePosition = { x: event.clientX, y: event.clientY };
-        });
-
-        // ==================== SIMULATOR STATE ====================
-        let gcodeLines = [];
-        let currentLineIndex = 0;
-        let isRunning = false;
-        let animationInterval = null;
-        let allowedZmin = -2.323; // Default manual Z limit
-        let toolPathPoints = [];
-        let pathLine = null;
-
-        // Update toolpath visualization
-        function updateToolPath() {
-            if (pathLine) scene.remove(pathLine);
-            if (toolPathPoints.length < 2) return;
-            const geometry = new THREE.BufferGeometry().setFromPoints(toolPathPoints);
-            const lastPoint = toolPathPoints[toolPathPoints.length - 1];
-            const material = new THREE.LineBasicMaterial({
-                color: lastPoint.crash ? 0xff3333 : 0x10b981
+            // Bed
+            const bedGeometry = new THREE.BoxGeometry(20, 2, 8);
+            const bedMaterial = new THREE.MeshBasicMaterial({
+                color: 0x4b5563,
+                wireframe: true
             });
-            pathLine = new THREE.Line(geometry, material);
-            scene.add(pathLine);
-        }
+            const bed = new THREE.Mesh(bedGeometry, bedMaterial);
+            bed.rotation.x = -Math.PI / 8;
+            bed.position.y = -1;
+            latheGroup.add(bed);
 
-        // Z-Gate crash check
-        function checkZGate(z) {
-            const isSafe = z >= allowedZmin - 0.001;
-            if (!isSafe) {
-                document.getElementById('z-gate-status').innerHTML = 
-                    `<span style="color: #ff3333; font-weight: bold;">CRASH DETECTED: Z${z.toFixed(4)} &lt; ${allowedZmin.toFixed(4)}</span>`;
-                return false;
+            // Chuck
+            const chuckGeometry = new THREE.CylinderGeometry(2, 2, 1, 32);
+            const chuckMaterial = new THREE.MeshBasicMaterial({
+                color: 0x9ca3af,
+                wireframe: true
+            });
+            const chuck = new THREE.Mesh(chuckGeometry, chuckMaterial);
+            chuck.position.z = 2;
+            latheGroup.add(chuck);
+
+            // Turret
+            const turret = new THREE.Group();
+            const turretBodyGeometry = new THREE.BoxGeometry(1.5, 1.5, 3);
+            const turretBodyMaterial = new THREE.MeshBasicMaterial({
+                color: 0x3b82f6,
+                wireframe: true
+            });
+            const turretBody = new THREE.Mesh(turretBodyGeometry, turretBodyMaterial);
+            turret.add(turretBody);
+            turret.position.set(0, 0.5, -6);
+            latheGroup.add(turret);
+
+            // Tool line (from turret to tip)
+            const toolGeometry = new THREE.BufferGeometry();
+            const toolMaterial = new THREE.LineBasicMaterial({
+                color: 0xff3333,
+                linewidth: 3
+            });
+            const toolLine = new THREE.Line(toolGeometry, toolMaterial);
+            turret.add(toolLine);
+
+            scene.add(latheGroup);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(10, 10, 5);
+            scene.add(directionalLight);
+
+            camera.position.set(12, 10, 12);
+            camera.lookAt(0, 0, 0);
+
+            // Mouse drag for camera orbit
+            let isDragging = false;
+            let previousMousePosition = { x: 0, y: 0 };
+            document.addEventListener('mousedown', (event) => {
+                isDragging = true;
+                previousMousePosition = { x: event.clientX, y: event.clientY };
+            });
+            document.addEventListener('mouseup', () => {
+                isDragging = false;
+            });
+            document.addEventListener('mousemove', (event) => {
+                if (!isDragging) return;
+                const deltaMove = {
+                    x: event.clientX - previousMousePosition.x,
+                    y: event.clientY - previousMousePosition.y
+                };
+                camera.position.x += deltaMove.x * 0.01;
+                camera.position.y -= deltaMove.y * 0.01;
+                previousMousePosition = { x: event.clientX, y: event.clientY };
+            });
+
+            // ==================== SIMULATOR STATE ====================
+            let gcodeLines = [];
+            let currentLineIndex = 0;
+            let isRunning = false;
+            let animationInterval = null;
+            let allowedZmin = -2.323; // Default manual Z limit
+            let toolPathPoints = [];
+            let pathLine = null;
+
+            // Update toolpath visualization
+            function updateToolPath() {
+                if (pathLine) scene.remove(pathLine);
+                if (toolPathPoints.length < 2) return;
+                const geometry = new THREE.BufferGeometry().setFromPoints(toolPathPoints);
+                const lastPoint = toolPathPoints[toolPathPoints.length - 1];
+                const material = new THREE.LineBasicMaterial({
+                    color: lastPoint.crash ? 0xff3333 : 0x10b981
+                });
+                pathLine = new THREE.Line(geometry, material);
+                scene.add(pathLine);
             }
-            return true;
-        }
 
-        // Execute a single G-code line
-        function executeLine(line) {
-            line = line.trim();
-            if (!line || line.startsWith('(')) {
-                // Parse manual Z limit from comments
-                const zMatch = line.match(/Manual Allowed Zmin[:\s]*(-?\d+\.?\d*)/i);
-                if (zMatch) allowedZmin = parseFloat(zMatch[1]);
-                return;
-            }
-
-            // Tool change (Txxxx)
-            const toolMatch = line.match(/T(\d\d)/);
-            if (toolMatch) {
-                const station = parseInt(toolMatch[1]) % 12;
-                turret.rotation.y = station * (Math.PI / 6); // 30 deg per station
-                document.getElementById('line-info').textContent = `Tool: T${toolMatch[1]}`;
-                return;
-            }
-
-            // Spindle on (M03/M3) - spin chuck
-            if (line.includes('M03') || line.includes('M3')) {
-                chuck.rotation.z += 0.5;
-            }
-
-            // Linear/Rapid moves (G0/G1 X... Z...)
-            const moveMatch = line.match(/(G[0-1]).*?X([-\d.]+).*?Z([-\d.]+)/i);
-            if (moveMatch) {
-                const x = parseFloat(moveMatch[2]);
-                const z = parseFloat(moveMatch[3]);
-
-                // Update tool line
-                const points = [
-                    new THREE.Vector3(0, 0, 0),
-                    new THREE.Vector3(x, 0, z - 6)
-                ];
-                toolGeometry.setFromPoints(points);
-
-                // Add to toolpath
-                const point = new THREE.Vector3(x, 0, z);
-                point.crash = !checkZGate(z);
-                toolPathPoints.push(point);
-                updateToolPath();
-
-                // UI update
-                document.getElementById('line-info').textContent = 
-                    `Executing: ${moveMatch[0]} (X${x.toFixed(3)} Z${z.toFixed(3)})`;
-                highlightCurrentLine();
-            }
-        }
-
-        // Highlight current line
-        function highlightCurrentLine() {
-            const lineElements = document.querySelectorAll('#gcode-output div');
-            lineElements.forEach((el, index) => {
-                el.classList.remove('line-current', 'line-crash');
-                if (index === currentLineIndex - 1) {
-                    const isCrash = toolPathPoints.length > 0 && toolPathPoints[toolPathPoints.length - 1].crash;
-                    el.classList.add(isCrash ? 'line-crash' : 'line-current');
+            // Z-Gate crash check
+            function checkZGate(z) {
+                const isSafe = z >= allowedZmin - 0.001;
+                if (!isSafe) {
+                    document.getElementById('z-gate-status').innerHTML = 
+                        `<span style="color: #ff3333; font-weight: bold;">CRASH DETECTED: Z${z.toFixed(4)} &lt; ${allowedZmin.toFixed(4)}</span>`;
+                    return false;
                 }
-            });
-            document.getElementById('gcode-output').scrollTop = 
-                Math.max(0, (currentLineIndex - 5) * 20);
-        }
+                return true;
+            }
 
-        // ==================== UI EVENT LISTENERS ====================
-        document.getElementById('run-btn').addEventListener('click', () => {
-            const input = document.getElementById('gcode-input');
-            gcodeLines = input.value.split('\n').filter(line => line.trim() !== '');
-            currentLineIndex = 0;
-            toolPathPoints = [];
-            allowedZmin = -2.323; // Reset
-            isRunning = true;
-
-            // UI toggles
-            document.getElementById('run-btn').classList.add('hidden');
-            document.getElementById('pause-btn').classList.remove('hidden');
-            document.getElementById('z-gate-status').textContent = 'Z-Gate: Simulating...';
-
-            // Clear previous path
-            if (pathLine) scene.remove(pathLine);
-
-            // Run simulation interval
-            clearInterval(animationInterval);
-            animationInterval = setInterval(() => {
-                if (currentLineIndex >= gcodeLines.length || !isRunning) {
-                    clearInterval(animationInterval);
-                    isRunning = false;
-                    const hasCrash = toolPathPoints.some(p => p.crash);
-                    document.getElementById('z-gate-status').innerHTML = hasCrash
-                        ? '<span style="color: #ff3333; font-weight: bold;">SIM FAILED: CRASH DETECTED</span>'
-                        : '<span style="color: #10b981; font-weight: bold;">SIM COMPLETE: SAFE TO RUN</span>';
-                    document.getElementById('pause-btn').classList.add('hidden');
-                    document.getElementById('run-btn').classList.remove('hidden');
+            // Execute a single G-code line
+            function executeLine(line) {
+                line = line.trim();
+                if (!line || line.startsWith('(')) {
+                    // Parse manual Z limit from comments
+                    const zMatch = line.match(/Manual Allowed Zmin[:\s]*(-?\d+\.?\d*)/i);
+                    if (zMatch) allowedZmin = parseFloat(zMatch[1]);
                     return;
                 }
-                executeLine(gcodeLines[currentLineIndex]);
-                currentLineIndex++;
-            }, 300); // Speed: 300ms per line
-        });
 
-        document.getElementById('pause-btn').addEventListener('click', () => {
-            isRunning = false;
-            clearInterval(animationInterval);
-            document.getElementById('pause-btn').classList.add('hidden');
-            document.getElementById('run-btn').classList.remove('hidden');
-            document.getElementById('z-gate-status').textContent = 'Z-Gate: Paused';
-        });
+                // Tool change (Txxxx)
+                const toolMatch = line.match(/T(\d\d)/);
+                if (toolMatch) {
+                    const station = parseInt(toolMatch[1]) % 12;
+                    turret.rotation.y = station * (Math.PI / 6); // 30 deg per station
+                    document.getElementById('line-info').textContent = `Tool: T${toolMatch[1]}`;
+                    return;
+                }
 
-        document.getElementById('step-btn').addEventListener('click', () => {
-            if (currentLineIndex < gcodeLines.length) {
-                executeLine(gcodeLines[currentLineIndex]);
-                currentLineIndex++;
+                // Spindle on (M03/M3) - spin chuck
+                if (line.includes('M03') || line.includes('M3')) {
+                    chuck.rotation.z += 0.5;
+                }
+
+                // Linear/Rapid moves (G0/G1 X... Z...)
+                const moveMatch = line.match(/(G[0-1]).*?X([-\d.]+).*?Z([-\d.]+)/i);
+                if (moveMatch) {
+                    const x = parseFloat(moveMatch[2]);
+                    const z = parseFloat(moveMatch[3]);
+
+                    // Update tool line
+                    const points = [
+                        new THREE.Vector3(0, 0, 0),
+                        new THREE.Vector3(x, 0, z - 6)
+                    ];
+                    toolGeometry.setFromPoints(points);
+
+                    // Add to toolpath
+                    const point = new THREE.Vector3(x, 0, z);
+                    point.crash = !checkZGate(z);
+                    toolPathPoints.push(point);
+                    updateToolPath();
+
+                    // UI update
+                    document.getElementById('line-info').textContent = 
+                        `Executing: ${moveMatch[0]} (X${x.toFixed(3)} Z${z.toFixed(3)})`;
+                    highlightCurrentLine();
+                }
             }
-        });
 
-        document.getElementById('export-png').addEventListener('click', () => {
-            renderer.render(scene, camera);
-            const link = document.createElement('a');
-            link.href = renderer.domElement.toDataURL('image/png');
-            link.download = `lathe-twin-snapshot-${new Date().toISOString().slice(0, 10)}.png`;
-            link.click();
-        });
+            // Highlight current line
+            function highlightCurrentLine() {
+                const lineElements = document.querySelectorAll('#gcode-output div');
+                lineElements.forEach((el, index) => {
+                    el.classList.remove('line-current', 'line-crash');
+                    if (index === currentLineIndex - 1) {
+                        const isCrash = toolPathPoints.length > 0 && toolPathPoints[toolPathPoints.length - 1].crash;
+                        el.classList.add(isCrash ? 'line-crash' : 'line-current');
+                    }
+                });
+                document.getElementById('gcode-output').scrollTop = 
+                    Math.max(0, (currentLineIndex - 5) * 20);
+            }
 
-        // Live syntax highlighting on input
-        document.getElementById('gcode-input').addEventListener('input', (event) => {
-            const lines = event.target.value.split('\n');
-            const output = document.getElementById('gcode-output');
-            output.innerHTML = lines.map((line) => {
-                let highlighted = line
-                    .replace(/([GXYZTFS])\d*\.?\d*/g, '<span style="color: #60a5fa;">$1</span>$&')
-                    .replace(/M\d+/g, '<span style="color: #fcdb03;">$&</span>')
-                    .replace(/\(.*?\)/g, '<span style="color: #6b7280;">$&</span>');
-                return `<div>${highlighted}</div>`;
-            }).join('');
-        });
+            // ==================== UI EVENT LISTENERS ====================
+            document.getElementById('run-btn').addEventListener('click', () => {
+                const input = document.getElementById('gcode-input');
+                gcodeLines = input.value.split('\n').filter(line => line.trim() !== '');
+                currentLineIndex = 0;
+                toolPathPoints = [];
+                allowedZmin = -2.323; // Reset
+                isRunning = true;
 
-        // ==================== ANIMATION LOOP ====================
-        function animate() {
-            requestAnimationFrame(animate);
-            // Idle chuck spin
-            chuck.rotation.z += 0.01;
-            renderer.render(scene, camera);
-        }
-        animate();
+                // UI toggles
+                document.getElementById('run-btn').classList.add('hidden');
+                document.getElementById('pause-btn').classList.remove('hidden');
+                document.getElementById('z-gate-status').textContent = 'Z-Gate: Simulating...';
 
-        // Window resize handler
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
+                // Clear previous path
+                if (pathLine) scene.remove(pathLine);
+
+                // Run simulation interval
+                clearInterval(animationInterval);
+                animationInterval = setInterval(() => {
+                    if (currentLineIndex >= gcodeLines.length || !isRunning) {
+                        clearInterval(animationInterval);
+                        isRunning = false;
+                        const hasCrash = toolPathPoints.some(p => p.crash);
+                        document.getElementById('z-gate-status').innerHTML = hasCrash
+                            ? '<span style="color: #ff3333; font-weight: bold;">SIM FAILED: CRASH DETECTED</span>'
+                            : '<span style="color: #10b981; font-weight: bold;">SIM COMPLETE: SAFE TO RUN</span>';
+                        document.getElementById('pause-btn').classList.add('hidden');
+                        document.getElementById('run-btn').classList.remove('hidden');
+                        return;
+                    }
+                    executeLine(gcodeLines[currentLineIndex]);
+                    currentLineIndex++;
+                }, 300); // Speed: 300ms per line
+            });
+
+            document.getElementById('pause-btn').addEventListener('click', () => {
+                isRunning = false;
+                clearInterval(animationInterval);
+                document.getElementById('pause-btn').classList.add('hidden');
+                document.getElementById('run-btn').classList.remove('hidden');
+                document.getElementById('z-gate-status').textContent = 'Z-Gate: Paused';
+            });
+
+            document.getElementById('step-btn').addEventListener('click', () => {
+                if (currentLineIndex < gcodeLines.length) {
+                    executeLine(gcodeLines[currentLineIndex]);
+                    currentLineIndex++;
+                }
+            });
+
+            document.getElementById('export-png').addEventListener('click', () => {
+                renderer.render(scene, camera);
+                const link = document.createElement('a');
+                link.href = renderer.domElement.toDataURL('image/png');
+                link.download = `lathe-twin-snapshot-${new Date().toISOString().slice(0, 10)}.png`;
+                link.click();
+            });
+
+            // Live syntax highlighting on input
+            document.getElementById('gcode-input').addEventListener('input', (event) => {
+                const lines = event.target.value.split('\n');
+                const output = document.getElementById('gcode-output');
+                output.innerHTML = lines.map((line) => {
+                    let highlighted = line
+                        .replace(/([GXYZTFS])\d*\.?\d*/g, '<span style="color: #60a5fa;">$1</span>$&')
+                        .replace(/M\d+/g, '<span style="color: #fcdb03;">$&</span>')
+                        .replace(/\(.*?\)/g, '<span style="color: #6b7280;">$&</span>');
+                    return `<div>${highlighted}</div>`;
+                }).join('');
+            });
+
+            // ==================== ANIMATION LOOP ====================
+            function animate() {
+                requestAnimationFrame(animate);
+                // Idle chuck spin
+                chuck.rotation.z += 0.01;
+                renderer.render(scene, camera);
+            }
+            animate();
+
+            // Window resize handler
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
         });
     </script>
 </body>
